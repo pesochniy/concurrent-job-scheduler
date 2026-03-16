@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/pesochniy/concurrent-job-scheduler/handlers"
+	"github.com/pesochniy/concurrent-job-scheduler/internal/job"
+	"github.com/pesochniy/concurrent-job-scheduler/internal/scheduler"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Config struct {
@@ -30,7 +34,23 @@ func loadConfig() Config {
 func main() {
 	cfg := loadConfig()
 	mux := http.NewServeMux()
-	handlers.Register(mux)
+
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		connStr = "postgres://postgres:postgres@localhost:5432/jobsdb"
+	}
+
+	db, err := pgxpool.New(context.Background(), connStr)
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	//store := job.NewMemoryStore()
+	store := job.NewPostgresStore(db)
+	sched := scheduler.NewScheduler(store, 4)
+
+	h := handlers.NewHandler(store, sched)
+	handlers.Register(mux, h)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
@@ -49,6 +69,12 @@ func main() {
 		}
 	}()
 	log.Printf("server started on %s", cfg.HTTPAddr)
+
+	go func() {
+		if err := sched.Start(ctx); err != nil {
+			log.Printf("scheduler stopped: %v", err)
+		}
+	}()
 
 	<-ctx.Done()
 
